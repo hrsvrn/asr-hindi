@@ -8,7 +8,6 @@ import torch
 import torchaudio.transforms as T
 from librosa import resample
 import sentencepiece as spm
-import threading
 
 class StandaloneASR:
     def __init__(self, model_dir: str = "model_components"):
@@ -92,56 +91,83 @@ class StandaloneASR:
                 decoded.append(int(p))
             previous = p
 
-        try:
-            vocab_path = os.path.join(self.model_dir, "tokenizer_hi.vocab")
-            if not os.path.exists(vocab_path):
-                raise FileNotFoundError(f"Vocab file {vocab_path} not found")
+        vocab_path = os.path.join(self.model_dir, "tokenizer_hi.vocab")
+        if not os.path.exists(vocab_path):
+            raise FileNotFoundError(f"Vocab file {vocab_path} not found")
 
-            vocab = {}
-            with open(vocab_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    token = line.strip().split('\t')[0]
-                    id_hi = int(line.strip().split('\t')[1].replace("-", "")) + 1537
-                    vocab[id_hi] = token
+        vocab = {}
+        with open(vocab_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                token = line.strip().split('\t')[0]
+                id_hi = int(line.strip().split('\t')[1].replace("-", "")) + 1537
+                vocab[id_hi] = token
 
-            text = ''.join([vocab[id] if id in vocab else '<UNK>' for id in decoded])
-            text = text.replace('▁', ' ').strip()
-            return text
-        except Exception as e:
-            raise RuntimeError(f"Decoding failed: {str(e)}")
+        text = ''.join([vocab[id] if id in vocab else '<UNK>' for id in decoded])
+        text = text.replace('▁', ' ').strip()
+        return text
 
-# Real-time audio capture and inference
-fs = 16000
-chunk_duration = 5  # seconds
-chunk_samples = int(fs * chunk_duration)
-q = queue.Queue()
-
-asr = StandaloneASR(model_dir="model_components")
-
-def audio_callback(indata, frames, time, status):
-    if status:
-        print(status)
-    q.put(indata.copy())
-
-def inference_loop():
-    while True:
-        chunk = q.get()
-        try:
-            features, length = asr.preprocess_audio_chunk(chunk, fs)
-            logits = asr.run_inference(features, length)
-            text = asr.decode_output(logits)
-            print(f"Partial transcription: {text}")
-        except Exception as e:
-            print(f"Error during inference: {str(e)}")
-
-if __name__ == "__main__":
-    inference_thread = threading.Thread(target=inference_loop, daemon=True)
-    inference_thread.start()
-
-    with sd.InputStream(samplerate=fs, channels=1, callback=audio_callback, blocksize=chunk_samples):
-        print("Recording and transcribing in real-time. Press Ctrl+C to stop.")
-        try:
-            while True:
-                pass
-        except KeyboardInterrupt:
-            print("Stopped.")
+def transcribe_from_mic(model_dir="model_components", duration=5):
+    """
+    Transcribe audio from microphone in real-time
+    
+    Args:
+        model_dir: Directory containing the model files
+        duration: Recording duration in seconds
+        
+    Returns:
+        str: Transcribed text or error message
+    """
+    fs = 16000
+    
+    try:
+        asr = StandaloneASR(model_dir=model_dir)
+        print("✓ ASR model loaded successfully")
+    except Exception as e:
+        return f"[ERROR] Failed to load ASR model: {str(e)}"
+    
+    try:
+        # Check audio devices
+        devices = sd.query_devices()
+        input_device = sd.default.device[0] if sd.default.device[0] is not None else 0
+        print(f"✓ Using audio input device: {devices[input_device]['name']}")
+        
+        print(f"🎤 Recording for {duration} seconds... Speak clearly in Hindi!")
+        
+        # Record audio using simple approach
+        audio_data = sd.rec(int(duration * fs), samplerate=fs, channels=1, device=input_device)
+        sd.wait()  # Wait until recording is finished
+        
+        # Check audio levels
+        audio_level = np.abs(audio_data).max()
+        print(f"📊 Audio level: {audio_level:.4f}")
+        
+        if audio_level < 0.001:
+            return "[WARNING] Very low audio level detected. Please speak louder or check your microphone."
+        
+        # Reshape audio for processing
+        audio_chunk = audio_data.flatten()
+        print(f"✓ Audio captured: {audio_chunk.shape} samples")
+        
+        # Process audio
+        features, length = asr.preprocess_audio_chunk(audio_chunk, fs)
+        print(f"✓ Audio features: {features.shape}")
+        
+        # Run inference
+        logits = asr.run_inference(features, length)
+        print(f"✓ Inference completed: {logits.shape}")
+        
+        # Decode output
+        text = asr.decode_output(logits)
+        print(f"✓ Transcription: '{text}'")
+        
+        if not text or text.strip() == "":
+            return "[INFO] No speech detected or transcription is empty. Please try speaking more clearly."
+        
+        return text
+        
+    except Exception as e:
+        error_msg = f"[ERROR] Transcription failed: {str(e)}"
+        print(error_msg)
+        import traceback
+        traceback.print_exc()
+        return error_msg

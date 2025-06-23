@@ -5,3 +5,12 @@ sentencepiece
 soundfile
 librosa
 numpy==1.26
+torch
+torchvision
+torchaudio
+streamlit
+google-generativeai
+langgraph
+sentence-transformers
+scikit-learn
+sounddevice
